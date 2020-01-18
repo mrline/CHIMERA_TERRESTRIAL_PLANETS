@@ -1,0 +1,365 @@
+import math
+import numpy as np
+import scipy as sp
+from array import *
+from scipy import interpolate
+from scipy import signal
+from scipy import special
+from scipy import interp
+from scipy import ndimage
+import pdb
+import matplotlib as mpl
+mpl.use('TkAgg')
+from matplotlib.pyplot import *
+import datetime
+import ctran
+from pickle import *
+from numba import jit
+
+#kcoeff interpolater
+@jit(nopython=True)
+def kcoeff_interp(logPgrid, logTgrid, logPatm, logTatm, wnogrid, kcoeff):
+	Ng, NP, NT, Nwno, Nord=kcoeff.shape
+	Natm=len(logTatm)
+	kcoeff_int=np.zeros((Natm,Nwno,Ng,Nord))
+
+	for i in range(Natm):  #looping through atmospheric layers
+
+		y=logPatm[i]
+		x=logTatm[i]
+
+		p_ind_hi=np.where(logPgrid>=y)[0][0]
+		p_ind_low=np.where(logPgrid<y)[0][-1]
+		T_ind_hi=np.where(logTgrid>=x)[0][0]
+		T_ind_low=np.where(logTgrid<x)[0][-1]
+
+		y2=logPgrid[p_ind_hi]
+		y1=logPgrid[p_ind_low]
+		x2=logTgrid[T_ind_hi]
+		x1=logTgrid[T_ind_low]
+
+		for j in range(Ng): #looping through gases
+			for k in range(Nwno): #looping through wavenumber
+				for l in range(Nord): #looping through g-ord
+					#'''
+					arr=kcoeff[j,:,:,k,l]
+					Q11=arr[p_ind_low,T_ind_low]
+					Q12=arr[p_ind_hi,T_ind_low]
+					Q22=arr[p_ind_hi,T_ind_hi]
+					Q21=arr[p_ind_low,T_ind_hi]
+					fxy1=(x2-x)/(x2-x1)*Q11+(x-x1)/(x2-x1)*Q21
+					fxy2=(x2-x)/(x2-x1)*Q12+(x-x1)/(x2-x1)*Q22
+					fxy=(y2-y)/(y2-y1)*fxy1 + (y-y1)/(y2-y1)*fxy2
+					kcoeff_int[i,k,j,l]=fxy
+					#'''
+	return kcoeff_int
+
+#Computing transmission spectrum----------------------
+#uses correlated-K treatment of opacities
+@jit(nopython=True)
+def CalcTauXsecCK(kcoeffs,Z,Pavg,Tavg, Fractions, r0,gord, wts, xsecContinuum):
+
+    ngas=len(Fractions)
+    nlevels=len(Z)
+    nwno=kcoeffs.shape[1]
+    trans=np.zeros((nwno, nlevels))+1.
+    dlarr=np.zeros((nlevels,nlevels))
+    ncont=xsecContinuum.shape[-1]
+    uarr=np.zeros((nlevels,nlevels))
+    kb=1.38E-23
+    kbTavg=kb*Tavg
+    Pavg_pascal=1E5*Pavg
+    for i in range(nlevels-2):
+        for j in range(i):
+	    curlevel=i-j-1
+            r1=r0+Z[i]
+            r2=r0+Z[i-j]
+            r3=r0+Z[curlevel]
+            dlarr[i,j]=(r3**2-r1**2)**0.5-(r2**2-r1**2)**0.5
+	    uarr[i,j]=dlarr[i,j]*Pavg_pascal[curlevel]/kbTavg[curlevel]
+
+
+    for v in range(nwno):
+        for i in range(nlevels-2):
+            transfull=1.
+            #for CK gases--try to do ALL gases as CK b/c of common interpolation
+            for k in range(ngas):
+                transtmp=0.
+                for l in range(len(wts)):
+                    tautmp=0.
+                    for j in range(i):
+                        curlevel=i-j-1
+                        tautmp+=2.*Fractions[k,curlevel]*kcoeffs[curlevel,v,k,l]*uarr[i,j]
+                    transtmp+=np.exp(-tautmp)*wts[l]/2.
+                transfull*=transtmp
+                #trans[v,i]=transfull
+            #for continuum aborbers (gas rayligh, condensate scattering etc.--nlayers x nwno x ncont
+            for k in range(ncont):
+                tautmp=0.
+                for j in range(i):
+                    curlevel=i-j-1
+                    tautmp+=2.*xsecContinuum[curlevel,v,k]*uarr[i,j]
+                transfull*=np.exp(-tautmp)
+            trans[v,i]=transfull
+
+
+    return trans
+
+
+def tran(T, P, mmw,Ps,Pc,   H2O,CH4,CO2,O3,N2O,CO,amp,power,M,Rstar,Rp,wnomin,wnomax):
+
+    Fractions = np.array([ H2O,CH4,CO2,O3,N2O,CO])  #gas mole fraction profiles
+                        #H2Ray, HeRay  Ray General,
+    Frac_Cont = np.array([H2O*0.,H2O*0.,H2O*0.])  #continuum mole fraction profiles
+    #Load measured cross-sectional values and their corresponding
+    #T,P,and wno grids on which they were measured
+    Pgrid = restore.xsects[0]
+    Tgrid = restore.xsects[1]
+    wno = restore.xsects[2]
+    gord=restore.xsects[3]
+    wts=restore.xsects[4]
+    xsecarr = restore.xsects[5]
+
+    #Calculate Temperature, Pressure and Height grids on which
+    #transmissivity will be computed
+    n = len(P)
+    nv = len(wno)
+
+    Z=np.zeros(n)  #level altitudes
+    dZ=np.zeros(n)  #layer thickness array
+    r0=Rp*69911.*1.E3  #converting planet radius to meters
+    mmw=mmw*1.660539E-27  #converting mmw to Kg
+    kb=1.38E-23
+    G=6.67384E-11
+    M=M*1.898E27
+
+    #cropping the wavenumber grid over selected range wnomin to wnomax
+    loc=np.where((wno <= wnomax) & (wno >= wnomin))
+    loc=loc[0]
+    wno_offset = loc[0]
+    wnocrop=wno[loc]
+    count=len(wnocrop)
+
+    #Compute avg Temperature at each grid
+    Tavg = np.array([0.0]*(n-1))
+    Pavg = np.array([0.0]*(n-1))
+    for z in range(n-1):
+        Pavg[z] = np.sqrt(P[z]*P[z+1])
+        Tavg[z] = interp(np.log10(Pavg[z]),sp.log10(P),T)
+    #create hydrostatic altitutde grid from P and T
+    Phigh=P.compress((P>Ps).flat)  #deeper than reference pressure
+    Plow=P.compress((P<=Ps).flat)   #shallower than reference pressure
+    for i in range(Phigh.shape[0]):  #looping over levels above ref pressure
+        i=i+Plow.shape[0]-1
+        g=G*M/(r0+Z[i])**2#g0*(Rp/(Rp+Z[i]/(69911.*1E3)))**2
+        H=kb*Tavg[i]/(mmw[i]*g)  #scale height
+        dZ[i]=H*np.log(P[i+1]/P[i]) #layer thickness, dZ is negative
+        Z[i+1]=Z[i]-dZ[i]   #level altitude
+	#print P[i], H/1000.
+    for i in range(Plow.shape[0]-1):  #looping over levels below ref pressure
+        i=Plow.shape[0]-i-1
+        g=G*M/(r0+Z[i])**2#g0*(Rp/(Rp+Z[i]/(69911.*1E3)))**2
+        H=kb*Tavg[i]/(mmw[i]*g)
+        dZ[i]=H*np.log(P[i+1]/P[i])
+        Z[i-1]=Z[i]+dZ[i]
+	#print P[i], H/1000.
+
+    #Interpolate values of measured cross-sections at their respective
+    #temperatures pressures to the temperature and pressure of the
+    #levels on which the optical depth will be computed
+    #print "Interpolating cross-sections at ", datetime.datetime.now().time()
+    #make sure   300 <T <3000 otherwise off cross section grid
+    TT=np.zeros(len(Tavg))
+    TT[:]=Tavg
+    TT[Tavg < 70] = 70.
+    TT[Tavg > 410] = 410.
+
+    PP=np.zeros(len(Pavg))
+    PP[:]=Pavg
+    PP[Pavg < 1E-6]=1E-6
+    PP[Pavg > 30]=30
+
+    kcoeffs_interp=10**kcoeff_interp(np.log10(Pgrid), np.log10(Tgrid), np.log10(PP), np.log10(TT), wno[loc], xsecarr[:,:,:,loc,:])
+
+    #continuum opacities (nlayers x nwnobins x ncont)***********
+    xsec_cont=kcoeffs_interp[:,:,0,0]
+    wave = (1/wnocrop)*1E8
+    sigmaH2 = xsec_cont*0.+1*((8.14E-13)*(wave**(-4.))*(1+(1.572E6)*(wave**(-2.))+(1.981E12)*(wave**(-4.))))*1E-4  #H2 gas Ray
+    sigmaHe = xsec_cont*0.+1*((5.484E-14)*(wave**(-4.))*(1+(2.44E5)*(wave**(-2.))))*1E-4   #He gas Ray
+    #Rayleigh Haze from des Etangs 2008
+    wno0=1E4/0.43
+    sigmaRay=xsec_cont*0.+2.E-27*amp*(wnocrop/wno0)**power*1E-4
+    xsecContinuum=np.array([sigmaH2.T,sigmaHe.T,sigmaRay.T]).T #building continuum xsec array (same order as cont_fracs)
+    #(add more continuum opacities here and in fractions)
+    #********************************************
+    #Calculate transmissivity as a function of
+    #wavenumber and height in the atmosphere
+    #print "Computing Transmittance ", datetime.datetime.now().time()
+    t=CalcTauXsecCK(kcoeffs_interp,Z,Pavg,Tavg, Fractions, r0,gord,wts,xsecContinuum*1E-10)
+    locPc=np.where(P >= Pc)
+    t[:,locPc]=0.
+    #pdb.set_trace()
+    #Compute Integral to get (Rp/Rstar)^2 (equation in brown 2001, or tinetti 2012)
+    F=((r0+np.min(Z[:-1]))/(Rstar*6.955E8))**2+2./(Rstar*6.955E8)**2.*np.dot((1.-t),(r0+Z)*dZ)
+    #print "Ending Tran at ", datetime.datetime.now().time()
+    return wnocrop, F, Z#, TauOne
+#**************************************************************
+
+
+#*******************************************************************
+# FILE: xsects.py
+#
+# DESCRIPTION: This function returns Richard Freedman's cross-sections
+# after "restoring" the IDL save files.
+#
+# USAGE: >>> from xsects import xsects
+#        >>> xarr = xsects()
+#        >>> P = xarr[0]
+#        >>> ...
+#        >>> xsecarrH2S = xarr[10]
+#
+# RETURNS: (pressure pts, temp points, wavenum points, cross section arrs...
+#    cross section arrs: [pressure][temp][wavenum]
+#*******************************************************************
+
+
+def xsects():
+    ### Read in CK arrays
+    #H2O, CH4, CO2, O3, N2O, CO
+    ### Read in CK arrays
+    # H2O
+    file='../ABSCOEFF/H2O_HITRAN_CK_R100_20gp_50_30000wno.pic'
+    P,T,wno,kcoeff,g,wts = load(open(file,'rb'))
+    xsecarrH2O=10**(kcoeff-4.)
+    #
+    file='../ABSCOEFF/CH4_HITRAN_CK_R100_20gp_50_30000wno.pic'
+    P,T,wno,kcoeff,g,wts = load(open(file,'rb'))
+    xsecarrCH4=10**(kcoeff-4.)
+    #
+    file='../ABSCOEFF/CO2_HITRAN_CK_R100_20gp_50_30000wno.pic'
+    P,T,wno,kcoeff,g,wts = load(open(file,'rb'))
+    xsecarrCO2=10**(kcoeff-4.)
+    #
+    file='../ABSCOEFF/O3_HITRAN_CK_R100_20gp_50_30000wno.pic'
+    P,T,wno,kcoeff,g,wts = load(open(file,'rb'))
+    xsecarrO3=10**(kcoeff-4.)
+    #
+    file='../ABSCOEFF/N2O_02_HITRAN_CK_R100_20gp_50_30000wno.pic'
+    P,T,wno,kcoeff,g,wts = load(open(file,'rb'))
+    xsecarrN2O=10**(kcoeff-4.)
+    #
+    file='../ABSCOEFF/CO_HITRAN_CK_R100_20gp_50_30000wno.pic'
+    P,T,wno,kcoeff,g,wts = load(open(file,'rb'))
+    xsecarrCO=10**(kcoeff-4.)
+    P=10**P
+
+     #H2O, CH4, CO2, O3, N2O, CO
+    xsecarr = np.log10(np.array([xsecarrH2O, xsecarrCH4, xsecarrCO2, xsecarrO3, xsecarrN2O,xsecarrCO]))
+    return P,T,wno,g,wts,xsecarr
+
+
+
+#**************************************************************
+# FILE: restore.py
+#
+# DESCRIPTION: This class calls the function xsects(), thus
+# loading the x-sections as global variables.
+#
+# USAGE: >>> from restore import restore
+#        >>> Pgrid = restore.xsects[0]
+#
+#**************************************************************
+
+class restore():
+    xsects = xsects()
+
+
+#SIMPLE TP2 (using dlnT/dlnP lapse rates as parameters via potential temperature formula)
+def TP_simple2(Tsfc, Psfc, gam_trop, Ptrop, gam_strat,Pstrat, P):
+        T=np.zeros(len(P))
+
+        #troposphere T--adibat
+        Ttrop=Tsfc*(P/Psfc)**gam_trop  #P0=sfc p, Trop T
+
+        #stratosphere
+        Tpause=Ttrop[P <= Ptrop ][-1]  #tropopause Temp
+        PPtrop=P[P <= Ptrop ][-1]
+        Tstrat=Tpause*(P/PPtrop)**gam_strat
+
+        #merging troposphere and stratosphfere
+        T[P > Ptrop]=Ttrop[P > Ptrop]
+        T[P <= Ptrop]=Tstrat[P <= Ptrop]
+
+        #isothermal below surface (making surface a blackbody)
+        T[P >= Psfc]=T[P >= Psfc][0]
+
+        #isothermal above "stratopause" pressure, Pstrat
+        T[P<=Pstrat]=T[P<=Pstrat][-1]
+        T[T<=10]=10
+        T[T>=1000]=1000
+
+        #pdb.set_trace()
+        return T
+
+
+#**************************************************************************
+
+
+
+# FILE:fx.py
+#
+# DESCRIPTION: Forward model--takes in state vector and
+# returns the binned model points to compare directly to data
+# Be sure to change planet parameters when going to a new planet!
+#
+# USAGE:
+#**************************************************************************
+def fx(x):
+
+    # 0      1       2         3        4       5        6    7     8    9      10      11      12      13      14    15
+    #Tsfc,logPsfc,gam_trop,logPtrop,gam_strat,logPstrat, Rp, Rstar, M,logPc, Bkg_mmw, logH2O, logCH4, logCO2, logO3, logN2O,logCO
+    print(x)
+
+    #Temperature profile
+    #planet radius
+    Rp=x[6]/10.973  #converting to jupiter radii
+    #stellar radius
+    Rstar=x[7]    #in m
+    #1 bar gravity in mks
+    M=x[8]/317.828  #converting to jupiter masses
+    Bkg_mmw=x[10]
+    g0=6.67384E-11*M*1.898E27/(Rp*69911.*1.E3)**2  #gravity at planet surface
+    Pc=10.**x[9]
+    #pressure grid
+    logP = np.arange(-6,2.1,0.08)+0.08
+    P = 10.0**logP
+    #simple TP--------------------
+    Tsfc=x[0]  #surface temp
+    Psfc=10.**x[1]  #surface pressure
+    gam_trop=x[2]   #troposhpere lapse rate (dlnT/dlnP)
+    Ptrop=10**x[3]  #tropopause pressure
+    gam_strat=x[4]   #stratosphere lapse rate (dlnT/dlnP)
+    Pstrat=10**x[5]   #stratopause pressure (isothermal above this)
+    T=TP_simple2(Tsfc, Psfc, gam_trop, Ptrop, gam_strat,Pstrat, P)  #calling TP
+
+    #unpaking mixing ratios and replicating into grid that is len(P)-1
+    Ngas=6
+    H2O, CH4, CO2, O3, N2O, CO=np.tile(10**x[len(x)-Ngas:],len(logP)-1).reshape(len(logP)-1,Ngas).T
+    #H2O[P<2E-1]=1E-10#water condensation (just in case?)
+    Bkg_gas=1.-(H2O+CH4+CO2+O3+N2O+CO)  #assuming backrgound gas makes up the rest of the gas
+    mmw=Bkg_gas*Bkg_mmw+18.*H2O+16.*CH4+44.*CO2+48.*O3+44.*N2O+28.*CO  #computing mmw
+
+    #wavenumber range
+    wnomin =333#   can go from 50 (200 um) - 30000 (0.33 um)
+    wnomax =10000#      " "
+
+
+    Pref=1.1  #reference pressure bar-keep fixed
+    #if Psfc <= Pc: Pc=Psfc  #there's a surface and a cloud...if Psurface is < Pcloud, then treat surface as cloud!
+
+    #computing transmission spectrum-----------
+    spec = tran(T,P,mmw, Pref,Pc, H2O, CH4,CO2,O3,N2O,CO,1E-50,0., M, Rstar, Rp,wnomin,wnomax)
+    wnocrop = spec[0]
+    F = spec[1]
+    atm=np.array([T,P])
+    return F,wnocrop,atm
