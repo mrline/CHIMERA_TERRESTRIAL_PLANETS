@@ -59,7 +59,7 @@ err=np.interp(1E4/wno[::-1],wlgrid,err0)
 ntran = 25.0
 noise_floor = 5.0E-6
 err=np.sqrt( (err[::-1]*(1.0/np.sqrt(ntran)))**2.0 + (noise_floor)**2.0 )
-fname='DryEarth_1-30um_R100_1tran'
+fname='DryEarth_2-11um_R100_25tran'
 
 #defining data array
 y_meas=np.zeros(len(y_mod))
@@ -79,20 +79,21 @@ pickle.dump(output,open("data.pic","wb"))
 
 #plotting stuff
 wlgrid=1E4/wno
-ymin=1E6*np.min(y_mod)*0.98
-ymax=1E6*np.max(y_mod)*1.02
+ymin=1E6*np.min(y_mod)*0.99
+ymax=1E6*np.max(y_mod)*1.01
+xmin=np.min(1E4/wno)
+xmax=np.max(1E4/wno)
 fig1, ax=subplots()
-xlabel('$\lambda$ ($\mu$m)',fontsize=18)
-ylabel('(R$_{p}$/R$_{\star}$)$^{2}$ [ppm]',fontsize=18)
-minorticks_on()
-plot(1E4/wno, y_mod*1E6)
-errorbar(wlgrid, y_meas*1E6, yerr=err*1E6, xerr=None, fmt='ok',alpha=0.25)
-plot(wlgrid, y_mod,'ob')
+xlabel('$\lambda$ ($\mu$m)',fontsize=12)
+ylabel('(R$_{p}$/R$_{\star}$)$^{2}$ [ppm]',fontsize=12)
+ax.plot(1E4/wno, y_mod*1E6)
+ax.errorbar(wlgrid, y_meas*1E6, yerr=err*1E6, xerr=None, fmt='ok',alpha=0.25)
 ax.set_xscale('log')
-ax.set_xticks([1,1.4,2,2.7,3,3.3,4.3,5,7.7,11,15,17,20,30])
-ax.axis([1,30,ymin,ymax])
+ax.minorticks_off()
+
+ax.set_xticks([1,2,3,4,5,6,7,8,9,10,15,20,30])
+ax.axis([0.8*xmin*1.2,xmax,ymin,ymax])
 ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-ax.tick_params(length=10,width=1,labelsize='large',which='major')
 
 
 

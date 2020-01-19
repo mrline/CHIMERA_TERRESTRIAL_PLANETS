@@ -600,7 +600,7 @@ def hist2d(x, y, bins=20, range=None, weights=None, levels=None, smooth=None,
 	#pdb.set_trace()
         #ax.contourf(X2, Y2, H2.T, np.concatenate([[0], V, [H.max()*(1+1e-4)]]),
         #            **contourf_kwargs)
-	ax.contourf(X2, Y2, H2.T, np.concatenate([[0], V, [H.max()*(1+1e-4)]]),
+        ax.contourf(X2, Y2, H2.T, np.concatenate([[0], V, [H.max()*(1+1e-4)]]),
                     colors=('white','lightblue','cornflowerblue','blue'))
     
     # Plot the density map. This can't be plotted at the same time as the
