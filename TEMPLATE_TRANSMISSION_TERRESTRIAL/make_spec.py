@@ -53,7 +53,10 @@ x=np.array([Tsfc,logPsfc,gam_trop,logPtrop,gam_strat,logPstrat, Rp, Rstar, M,log
 y_mod,wno,atm=fx(x,xsects)
 
 
-#read in external noise file if available
+#read in external noise file if available--the noise_*.txt's are based on Tremblay + 2020 from the greene et al. 2016 noise model
+# there are 5 noise files for 5 different resolving powers right now, noise_R10, *_R30, *_R50, *_R100, and *_R300
+#If you switch this file, make sure to change the CK file lables in fm.py (e.g., from R100 to R300 etc., should 
+#obvious in that code)
 wlgrid, junk,junk, err0=np.loadtxt('noise_R100.txt').T  #must have same wlgrid as CK coeffs
 err=np.interp(1E4/wno[::-1],wlgrid,err0)
 ntran = 25.0
