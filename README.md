@@ -8,3 +8,5 @@ Instructions for "use":
 4.  To run the retrieval (again, we assume you are familiar with pymultinest and its api) on multiple cores (assuming you installed it correctly), type mpirun -np 4 python call_pymultinest.py.  With 1000 livepoints and 4 cores, it took just over 7 hours to do the 2-11 um spectrum at R=100 (this case, about 365,793 likelihood/model evaluations).  
 5. Run the routine plot_PMN.py to produce the corner plot.
 6. If you want to compute "detection significances" you'll need to modify call_pymultinest.py by removing a gas parameter (and fixing to -12 or something) and re-running.  You can compute the bayes factors by comparing the evidence from the full model with all gases and the one with one less gas. See Tremblay+2020 for what this means.
+
+The corner plots for the R=50 and R=100 cases in Tremblay et al. 2020 can be found in the zip file (Corner_Plots_Tremblay_2020.zip)
